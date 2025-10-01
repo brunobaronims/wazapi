@@ -10,9 +10,10 @@ pub const REFERENCE_TIME = windows.LONGLONG;
 pub const BYTE = windows.BYTE;
 pub const UINT32 = u32;
 pub const DWORD = windows.DWORD;
+pub const WORD = windows.WORD;
+pub const GUID = windows.GUID;
 const ULONG = windows.ULONG;
 const UINT = windows.UINT;
-const GUID = windows.GUID;
 const LPWSTR = windows.LPWSTR;
 const LPCWSTR = windows.LPCWSTR;
 const LPVOID = windows.LPVOID;
@@ -25,7 +26,7 @@ pub const COINIT_MULTITHREADED = 0x0;
 pub const CLSCTX_ALL = 0x17;
 
 pub const REFTIMES_PER_SEC = 10000000;
-const REFTIMES_PER_MILLISEC = 10000;
+pub const REFTIMES_PER_MILLISEC = 10000;
 
 // Out-only types we only need as opaque pointers for now:
 const PROPVARIANT = opaque {};
@@ -39,24 +40,43 @@ pub inline fn FAILED(hr: HRESULT) bool {
     return hr < 0;
 }
 
+pub inline fn safeRelease(ptr: anytype) void {
+    if (ptr) |obj| {
+        _ = obj.Release();
+    }
+}
+
 // External COM functions
 pub extern "ole32" fn CoInitializeEx(pvReserved: ?LPVOID, dwCoInit: DWORD) callconv(WINAPI) HRESULT;
 pub extern "ole32" fn CoUninitialize() callconv(WINAPI) void;
 pub extern "ole32" fn CoCreateInstance(rclsid: *const GUID, pUnkOuter: ?*anyopaque, dwClsContext: DWORD, riid: *const GUID, ppv: *?LPVOID) callconv(WINAPI) HRESULT;
+pub extern "ole32" fn CoTaskMemFree(pv: ?LPVOID) callconv(WINAPI) void;
 
 pub const WAVEFORMATEX = extern struct {
-    wFormatTag: u16,
-    nChannels: u16,
-    nSamplesPerSec: u32,
-    nAvgBytesPerSec: u32,
-    nBlockAlign: u16,
-    wBitsPerSample: u16,
-    cbSize: u16,
+    wFormatTag: WORD,
+    nChannels: WORD,
+    nSamplesPerSec: DWORD,
+    nAvgBytesPerSec: DWORD,
+    nBlockAlign: WORD,
+    wBitsPerSample: WORD,
+    cbSize: WORD,
+};
+
+pub const WAVEFORMATEXTENSIBLE = extern struct {
+    Format: WAVEFORMATEX,
+    Samples: extern union {
+        wValidBitsPerSample: WORD,
+        wSamplesPerBlock: WORD,
+        wReserved: WORD,
+    },
+    dwChannelMask: DWORD,
+    SubFormat: GUID,
 };
 
 // Audio format constants
-const WAVE_FORMAT_PCM = 1;
-const WAVE_FORMAT_IEEE_FLOAT = 3;
+pub const WAVE_FORMAT_PCM = 1;
+pub const WAVE_FORMAT_IEEE_FLOAT = 3;
+pub const WAVE_FORMAT_EXTENSIBLE = 0xFFFE;
 
 const DEVICE_STATE_ACTIVE = 0x1;
 const DEVICE_STATE_DISABLED = 0x2;
@@ -97,6 +117,20 @@ pub const IID_IAudioRenderClient = GUID{
     .Data2 = 0x3146,
     .Data3 = 0x4483,
     .Data4 = [8]u8{ 0xA7, 0xBF, 0xAD, 0xDC, 0xA7, 0xC2, 0x60, 0xE2 },
+};
+
+pub const KSDATAFORMAT_SUBTYPE_PCM = GUID{
+    .Data1 = 0x00000001,
+    .Data2 = 0x0000,
+    .Data3 = 0x0010,
+    .Data4 = [8]u8{ 0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71 },
+};
+
+pub const KSDATAFORMAT_SUBTYPE_IEEE_FLOAT = GUID{
+    .Data1 = 0x00000003,
+    .Data2 = 0x0000,
+    .Data3 = 0x0010,
+    .Data4 = [8]u8{ 0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71 },
 };
 
 // WASAPI enums
@@ -341,7 +375,7 @@ pub const IAudioClient = extern struct {
     inline fn GetStreamLatency(self: *IAudioClient, out_latency: *REFERENCE_TIME) HRESULT {
         return self.lpVtbl.GetStreamLatency(self, out_latency);
     }
-    inline fn GetCurrentPadding(self: *IAudioClient, out_padding: *UINT32) HRESULT {
+    pub inline fn GetCurrentPadding(self: *IAudioClient, out_padding: *UINT32) HRESULT {
         return self.lpVtbl.GetCurrentPadding(self, out_padding);
     }
     inline fn IsFormatSupported(
@@ -362,10 +396,10 @@ pub const IAudioClient = extern struct {
     ) HRESULT {
         return self.lpVtbl.GetDevicePeriod(self, defaultDevicePeriod, minimumDevicePeriod);
     }
-    inline fn Start(self: *IAudioClient) HRESULT {
+    pub inline fn Start(self: *IAudioClient) HRESULT {
         return self.lpVtbl.Start(self);
     }
-    inline fn Stop(self: *IAudioClient) HRESULT {
+    pub inline fn Stop(self: *IAudioClient) HRESULT {
         return self.lpVtbl.Stop(self);
     }
     inline fn Reset(self: *IAudioClient) HRESULT {
@@ -441,14 +475,14 @@ pub const IAudioRenderClient = extern struct {
         return self.lpVtbl.Release(self);
     }
 
-    inline fn GetBuffer(
+    pub inline fn GetBuffer(
         self: *IAudioRenderClient,
         NumFramesRequested: UINT32,
-        ppData: *?*BYTE,
+        ppData: *[*]BYTE,
     ) HRESULT {
         return self.lpVtbl.GetBuffer(self, NumFramesRequested, ppData);
     }
-    inline fn ReleaseBuffer(
+    pub inline fn ReleaseBuffer(
         self: *IAudioRenderClient,
         NumFramesWritten: UINT32,
         dwFlags: DWORD,
@@ -466,7 +500,7 @@ const IAudioRenderClientVtbl = extern struct {
     AddRef: *const fn (*IAudioRenderClient) callconv(WINAPI) ULONG,
     Release: *const fn (*IAudioRenderClient) callconv(WINAPI) ULONG,
 
-    GetBuffer: *const fn (*IAudioRenderClient, UINT32, *?*BYTE) callconv(WINAPI) HRESULT,
+    GetBuffer: *const fn (*IAudioRenderClient, UINT32, *[*]BYTE) callconv(WINAPI) HRESULT,
     ReleaseBuffer: *const fn (*IAudioRenderClient, UINT32, DWORD) callconv(WINAPI) HRESULT,
 };
 
