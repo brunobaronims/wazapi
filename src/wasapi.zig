@@ -151,6 +151,12 @@ pub const AUDCLNT_SHAREMODE = enum(c_int) {
     AUDCLNT_SHAREMODE_EXCLUSIVE = 1,
 };
 
+pub const AUDCLNT_BUFFERFLAGS = enum(c_int) {
+    AUDCLNT_DATA_DISCONTINUITY = 0x1,
+    AUDLCNT_SILENT = 0x2,
+    AUDCLNT_TIMESTAMP_ERROR = 0x4,
+};
+
 pub const IMMDeviceEnumerator = extern struct {
     lpVtbl: *const IMMDeviceEnumeratorVtbl,
 

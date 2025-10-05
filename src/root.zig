@@ -85,6 +85,8 @@ pub const Player = struct {
             return null;
         }
 
+        source.frame_count = result.bufferFrameCount;
+
         hr = result.pAudioClient.?.GetService(
             &wasapi.IID_IAudioRenderClient,
             @ptrCast(&result.pRenderClient),
@@ -99,7 +101,7 @@ pub const Player = struct {
             return null;
         }
 
-        source.loadData(result.pData, result.bufferFrameCount);
+        source.loadData(result.bufferFrameCount, result.pData, &result.flags);
 
         hr = result.pRenderClient.?.ReleaseBuffer(result.bufferFrameCount, result.flags);
         if (wasapi.FAILED(hr)) {
@@ -119,36 +121,46 @@ pub const Player = struct {
 
         std.log.info("Started playback!", .{});
 
-        const sleep_ms = @as(
-            u32,
-            @intCast(@divTrunc(result.hnsActualDuration, wasapi.REFTIMES_PER_MILLISEC * 2)),
-        );
+        const sleep_ms = @as(u32, @intCast(@divTrunc(
+            @divTrunc(result.hnsActualDuration, wasapi.REFTIMES_PER_MILLISEC),
+            2,
+        )));
 
-        // Simple test loop - play for a bit
-        var i: u32 = 0;
-        while (i < 100) : (i += 1) {
+        while (result.flags != @intFromEnum(wasapi.AUDCLNT_BUFFERFLAGS.AUDLCNT_SILENT)) {
             std.Thread.sleep(sleep_ms * std.time.ns_per_ms);
 
-            var numFramesPadding: u32 = 0;
-            hr = result.pAudioClient.?.GetCurrentPadding(&numFramesPadding);
-            if (wasapi.FAILED(hr)) break;
+            hr = result.pAudioClient.?.GetCurrentPadding(
+                @ptrCast(&result.numFramesPadding),
+            );
+            if (wasapi.FAILED(hr)) {
+                return null;
+            }
 
-            const numFramesAvailable = result.bufferFrameCount - numFramesPadding;
+            result.numFramesAvailable = result.bufferFrameCount - result.numFramesPadding;
 
-            if (numFramesAvailable > 0) {
-                var pData: [*]u8 = undefined;
-                hr = result.pRenderClient.?.GetBuffer(numFramesAvailable, @ptrCast(&pData));
-                if (wasapi.FAILED(hr)) break;
+            hr = result.pRenderClient.?.GetBuffer(
+                result.numFramesAvailable,
+                @ptrCast(&result.pData),
+            );
+            if (wasapi.FAILED(hr)) {
+                return null;
+            }
 
-                source.loadData(pData, numFramesAvailable);
+            source.loadData(result.numFramesAvailable, result.pData, &result.flags);
 
-                hr = result.pRenderClient.?.ReleaseBuffer(numFramesAvailable, 0);
-                if (wasapi.FAILED(hr)) break;
+            hr = result.pRenderClient.?.ReleaseBuffer(result.numFramesAvailable, result.flags);
+            if (wasapi.FAILED(hr)) {
+                return null;
             }
         }
 
+        std.Thread.sleep(sleep_ms);
+
         // Stop
-        _ = result.pAudioClient.?.Stop();
+        hr = result.pAudioClient.?.Stop();
+        if (wasapi.FAILED(hr)) {
+            return null;
+        }
 
         std.log.info("Success.", .{});
 
@@ -164,18 +176,7 @@ pub const Source = struct {
     is_float: bool = false,
     phase: f32 = 0.0,
     frequency: f32 = 440.0,
-
-    fn guidsEqual(a: wasapi.GUID, b: wasapi.GUID) bool {
-        if (a.Data1 != b.Data1) return false;
-        if (a.Data2 != b.Data2) return false;
-        if (a.Data3 != b.Data3) return false;
-
-        // Compare Data4 directly
-        for (a.Data4, b.Data4) |byte_a, byte_b| {
-            if (byte_a != byte_b) return false;
-        }
-        return true;
-    }
+    frame_count: u32 = 0,
 
     pub fn setFormat(self: *Source, pwfx: *wasapi.WAVEFORMATEX) void {
         self.sample_rate = pwfx.nSamplesPerSec;
@@ -214,17 +215,21 @@ pub const Source = struct {
         });
     }
 
-    pub fn loadData(self: *Source, buffer: [*]u8, frame_count: u32) void {
+    pub fn loadData(self: *Source, frame_count: u32, buffer: [*]u8, flags: *wasapi.DWORD) void {
+        if (self.frame_count == 0) {
+            flags.* = @intFromEnum(wasapi.AUDCLNT_BUFFERFLAGS.AUDLCNT_SILENT);
+            return;
+        }
+
         const phase_increment = self.frequency / @as(f32, @floatFromInt(self.sample_rate));
 
         // Check actual format using is_float flag
         if (self.is_float and self.bits_per_sample == 32) {
             // 32-bit float
             const samples = @as([*]f32, @ptrCast(@alignCast(buffer)));
-            const total_samples = frame_count * self.channels;
 
             var i: u32 = 0;
-            while (i < total_samples) : (i += 1) {
+            while (i < frame_count) : (i += 1) {
                 const sample = @sin(self.phase * 2.0 * std.math.pi) * 0.3;
                 samples[i] = sample;
 
@@ -236,10 +241,9 @@ pub const Source = struct {
         } else if (!self.is_float and self.bits_per_sample == 16) {
             // 16-bit PCM
             const samples = @as([*]i16, @ptrCast(@alignCast(buffer)));
-            const total_samples = frame_count * self.channels;
 
             var i: u32 = 0;
-            while (i < total_samples) : (i += 1) {
+            while (i < frame_count) : (i += 1) {
                 const sample = @sin(self.phase * 2.0 * std.math.pi) * 0.3;
                 samples[i] = @intFromFloat(sample * 32767.0);
 
@@ -249,10 +253,27 @@ pub const Source = struct {
                 }
             }
         } else {
+            flags.* = @intFromEnum(wasapi.AUDCLNT_BUFFERFLAGS.AUDLCNT_SILENT);
             std.log.err("Unsupported format: {} bits, float={}", .{
                 self.bits_per_sample,
                 self.is_float,
             });
+            return;
         }
+
+        self.frame_count -= frame_count;
+        flags.* = 0;
+    }
+
+    fn guidsEqual(a: wasapi.GUID, b: wasapi.GUID) bool {
+        if (a.Data1 != b.Data1) return false;
+        if (a.Data2 != b.Data2) return false;
+        if (a.Data3 != b.Data3) return false;
+
+        // Compare Data4 directly
+        for (a.Data4, b.Data4) |byte_a, byte_b| {
+            if (byte_a != byte_b) return false;
+        }
+        return true;
     }
 };
